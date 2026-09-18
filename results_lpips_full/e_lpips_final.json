@@ -1,0 +1,6 @@
+{
+  "label": "lpips_w0.1_100ep",
+  "overall_psnr": 23.573135440809686,
+  "overall_ssim": 0.6150690599491722,
+  "overall_lpips": 0.16941183812001295
+}

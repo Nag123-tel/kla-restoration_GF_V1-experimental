@@ -1,0 +1,6 @@
+{
+  "label": "baseline_100ep",
+  "overall_psnr": 23.697240666339273,
+  "overall_ssim": 0.6238333684833426,
+  "overall_lpips": 0.3413710220341097
+}
