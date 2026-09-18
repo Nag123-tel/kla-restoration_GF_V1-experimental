@@ -130,9 +130,11 @@ class NAFNetSR(nn.Module):
 
     def __init__(self, in_ch=1, width=32,
                  enc_blk_nums=(2, 2, 4), dec_blk_nums=(2, 2, 2),
-                 middle_blk_num=4, scale=2):
+                 middle_blk_num=4, scale=2, use_vst=False, vst_k=4.0):
         super().__init__()
         self.scale = scale
+        self.use_vst = use_vst
+        self.vst_k = vst_k
 
         self.intro = nn.Conv2d(in_ch, width, 3, padding=1)
 
@@ -179,10 +181,37 @@ class NAFNetSR(nn.Module):
         pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
         return F.pad(x, (0, pad_w, 0, pad_h)), h, w
 
+    @staticmethod
+    def _vst(x, k):
+        """Signed log1p variance-stabilizing transform.
+
+        Targets the confirmed multiplicative/speckle noise in this data
+        (noise level correlates with local pixel intensity, corr=0.864-0.869,
+        measured across two independent SEM datasets): the transform
+        compresses input magnitude logarithmically, so the proportionally
+        larger noise swings that ride on brighter regions get compressed
+        along with them.
+
+        Defined for all real x (including the negative excursions the
+        NoisyLR spec allows), and has slope 1 at x=0 for any k, so it is
+        ~identity near zero and leaves low-amplitude fine detail (and the
+        low end of the intensity range, where noise is already small)
+        essentially untouched.
+        """
+        return torch.sign(x) * torch.log1p(torch.abs(x) * k) / k
+
     def forward(self, x):
         x_in, h, w = self._pad_to_multiple(x)
 
-        feat = self.intro(x_in)
+        # VST applies ONLY to what the network's internal path sees. `x`
+        # (untransformed) is still what feeds the bicubic residual `base`
+        # below, so the global residual shortcut's math is unaffected --
+        # the network still just predicts a correction on top of `base`,
+        # it just extracts features from a variance-stabilized view of
+        # the input while doing so.
+        net_in = self._vst(x_in, self.vst_k) if self.use_vst else x_in
+
+        feat = self.intro(net_in)
         skips = []
         for encoder, down in zip(self.encoders, self.downs):
             feat = encoder(feat)
@@ -212,9 +241,17 @@ class NAFNetSR(nn.Module):
         return base + out
 
 
-def build_model(in_ch=1, width=32, scale=2, size="tiny"):
+def build_model(in_ch=1, width=32, scale=2, size="tiny", use_vst=False, vst_k=4.0):
     """Convenience factory. size in {'tiny','small','base'} trades quality
-    for speed/throughput -- see README for measured runtime on your GPU."""
+    for speed/throughput -- see README for measured runtime on your GPU.
+
+    use_vst / vst_k: enable the signed-log1p variance-stabilizing transform
+    on the network's internal input path (see NAFNetSR._vst). Defaults to
+    False so existing checkpoints -- trained with the raw input -- keep
+    loading and behaving exactly as before; only set True for a run that
+    is trained (or fine-tuned) with it enabled from the start, since the
+    `intro` conv's weights are only meaningful for the input distribution
+    they were trained on."""
     configs = {
         "tiny":  dict(width=24, enc_blk_nums=(1, 1, 2), dec_blk_nums=(1, 1, 1), middle_blk_num=2),
         "small": dict(width=32, enc_blk_nums=(2, 2, 4), dec_blk_nums=(2, 2, 2), middle_blk_num=4),
@@ -226,4 +263,4 @@ def build_model(in_ch=1, width=32, scale=2, size="tiny"):
         # to keep the reference implementation simple. Use 'small' or 'tiny'
         # unless you extend encoders/decoders to 4 stages yourself.
         raise NotImplementedError("'base' 4-stage config left as an exercise; use 'small' or 'tiny'.")
-    return NAFNetSR(in_ch=in_ch, scale=scale, **cfg)
+    return NAFNetSR(in_ch=in_ch, scale=scale, use_vst=use_vst, vst_k=vst_k, **cfg)

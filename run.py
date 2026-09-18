@@ -67,6 +67,8 @@ def _load_model(device):
         in_ch=cfg.get("in_ch", 1),
         scale=cfg.get("scale", 2),
         size=cfg.get("model_size", "tiny"),
+        use_vst=cfg.get("use_vst", False),
+        vst_k=cfg.get("vst_k", 4.0),
     )
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device)

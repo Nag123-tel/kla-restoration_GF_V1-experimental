@@ -6,12 +6,21 @@ Loss functions for the restoration model.
   sharper reconstructions than L1.
 - SSIMLoss: structural similarity term, directly optimizes toward one of
   KLA's reported metrics.
+- LPIPSLoss: perceptual similarity term (learned feature-space distance),
+  optimizes toward the third of KLA's three reported metrics -- the only
+  one of the three the original CombinedLoss didn't touch at all.
 - CombinedLoss: weighted sum, the common recipe for restoration training.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+try:
+    import lpips as lpips_lib
+    _LPIPS_AVAILABLE = True
+except ImportError:
+    _LPIPS_AVAILABLE = False
 
 
 class CharbonnierLoss(nn.Module):
@@ -69,15 +78,70 @@ class SSIMLoss(nn.Module):
         return 1.0 - ssim_map.mean()
 
 
-class CombinedLoss(nn.Module):
-    """weight_charbonnier * Charbonnier + weight_ssim * (1 - SSIM)"""
+class LPIPSLoss(nn.Module):
+    """Trainable perceptual loss wrapping the `lpips` package (same package
+    src/metrics.py's LPIPSMetric uses for reporting).
 
-    def __init__(self, channels=1, weight_charbonnier=1.0, weight_ssim=0.2):
+    Two things distinguish this from LPIPSMetric, both necessary to use it
+    as a LOSS rather than a reported number:
+    - No @torch.no_grad(): gradients must flow back through to `pred` so
+      the restoration model can actually learn from this signal.
+    - The LPIPS backbone's own weights are explicitly frozen
+      (requires_grad_(False) on every parameter) -- training with this
+      loss updates YOUR model only, never the pretrained feature extractor.
+
+    Device handling is lazy (mirrors SSIMLoss's `.to(pred.device)` above):
+    the backbone moves to whatever device `pred` is on, the first time it
+    sees it, so this doesn't need a separate `.to(device)` call at
+    construction the way the model does.
+    """
+
+    def __init__(self, net="alex"):
+        super().__init__()
+        if not _LPIPS_AVAILABLE:
+            raise ImportError(
+                "pip install lpips  # required for --weight_lpips > 0"
+            )
+        self.model = lpips_lib.LPIPS(net=net)
+        self.model.eval()
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+        self._device = torch.device("cpu")
+
+    def forward(self, pred, target):
+        if pred.device != self._device:
+            self.model = self.model.to(pred.device)
+            self._device = pred.device
+
+        pred_c = pred.clamp(0, 1)
+        target_c = target.clamp(0, 1)
+        if pred_c.shape[1] == 1:
+            pred_c = pred_c.repeat(1, 3, 1, 1)
+            target_c = target_c.repeat(1, 3, 1, 1)
+
+        # LPIPS expects 3-channel input in [-1, 1].
+        pred_n = pred_c * 2 - 1
+        target_n = target_c * 2 - 1
+        return self.model(pred_n, target_n).mean()
+
+
+class CombinedLoss(nn.Module):
+    """weight_charbonnier * Charbonnier + weight_ssim * (1 - SSIM)
+       [+ weight_lpips * LPIPS, only when weight_lpips > 0]
+
+    LPIPS is opt-in and off by default (weight_lpips=0.0), so existing
+    training commands and the default loss are completely unchanged --
+    this only activates when explicitly asked for."""
+
+    def __init__(self, channels=1, weight_charbonnier=1.0, weight_ssim=0.2,
+                 weight_lpips=0.0, lpips_net="alex"):
         super().__init__()
         self.charbonnier = CharbonnierLoss()
         self.ssim = SSIMLoss(channels=channels)
         self.w_char = weight_charbonnier
         self.w_ssim = weight_ssim
+        self.w_lpips = weight_lpips
+        self.lpips = LPIPSLoss(net=lpips_net) if weight_lpips > 0 else None
 
     def forward(self, pred, target):
         pred_c = pred.clamp(0, 1)
@@ -85,4 +149,11 @@ class CombinedLoss(nn.Module):
         l_char = self.charbonnier(pred, target)
         l_ssim = self.ssim(pred_c, target_c)
         total = self.w_char * l_char + self.w_ssim * l_ssim
-        return total, {"charbonnier": l_char.item(), "ssim_loss": l_ssim.item()}
+        parts = {"charbonnier": l_char.item(), "ssim_loss": l_ssim.item()}
+
+        if self.lpips is not None:
+            l_lpips = self.lpips(pred_c, target_c)
+            total = total + self.w_lpips * l_lpips
+            parts["lpips_loss"] = l_lpips.item()
+
+        return total, parts

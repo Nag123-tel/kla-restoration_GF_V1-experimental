@@ -59,7 +59,8 @@ def evaluate_checkpoint(checkpoint_path, run_val_split_path, final_manifest_path
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     ckpt = torch.load(checkpoint_path, map_location=device)
     args = ckpt['args']
-    model = build_model(in_ch=args['in_ch'], scale=args['scale'], size=args['model_size']).to(device)
+    model = build_model(in_ch=args['in_ch'], scale=args['scale'], size=args['model_size'],
+                         use_vst=args.get('use_vst', False), vst_k=args.get('vst_k', 4.0)).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
     print(f"[{label}] Loaded checkpoint from epoch {ckpt['epoch']}, "

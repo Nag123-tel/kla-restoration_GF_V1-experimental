@@ -56,6 +56,16 @@ def get_args():
     p.add_argument("--model_size", type=str, default="tiny", choices=["tiny", "small"])
     p.add_argument("--pretrained_checkpoint", type=str, default=None,
                     help="Path to an existing checkpoint (.pt) to initialize weights from.")
+    p.add_argument("--use_vst", action="store_true",
+                    help="Enable the signed-log1p variance-stabilizing transform on the "
+                         "network's internal input path (targets the confirmed multiplicative "
+                         "noise). NOTE: changes what `intro` sees, so a --pretrained_checkpoint "
+                         "trained without this flag is being fine-tuned into a new input "
+                         "distribution, not just having its weights refined -- expect to watch "
+                         "the first few epochs closely.")
+    p.add_argument("--vst_k", type=float, default=4.0,
+                    help="Compression strength for --use_vst (higher = more compression at "
+                         "large |x|; the transform is slope-1 near 0 regardless of k).")
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--lr", type=float, default=2e-4)
@@ -306,9 +316,11 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
                              num_workers=args.num_workers) if n_val > 0 else None
 
-    model = build_model(in_ch=args.in_ch, scale=args.scale, size=args.model_size).to(device)
+    model = build_model(in_ch=args.in_ch, scale=args.scale, size=args.model_size,
+                         use_vst=args.use_vst, vst_k=args.vst_k).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model: NAFNetSR ({args.model_size}), params={n_params:,}")
+    print(f"Model: NAFNetSR ({args.model_size}), params={n_params:,}, "
+          f"use_vst={args.use_vst}" + (f" (k={args.vst_k})" if args.use_vst else ""))
 
     if args.pretrained_checkpoint:
         pretrained = torch.load(args.pretrained_checkpoint, map_location=device)
