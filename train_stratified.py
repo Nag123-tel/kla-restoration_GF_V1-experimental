@@ -70,6 +70,16 @@ def get_args():
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--weight_ssim", type=float, default=0.2)
+    p.add_argument("--weight_lpips", type=float, default=0.0,
+                    help="Weight for an LPIPS perceptual-loss term, added to the original "
+                         "Charbonnier + SSIM combined loss (only used when --loss_type "
+                         "combined). 0.0 (default) = off, byte-identical to the original "
+                         "loss. LPIPS is one of KLA's three scored metrics and the "
+                         "original loss never optimized toward it directly.")
+    p.add_argument("--lpips_net", type=str, default="alex", choices=["alex", "vgg", "squeeze"],
+                    help="Backbone for --weight_lpips. 'alex' matches the net evaluate.py "
+                         "reports LPIPS with by default, so the loss you train against and "
+                         "the number you report are the same perceptual space.")
     p.add_argument("--loss_type", type=str, default="combined",
                     choices=["combined", "intensity_weighted"],
                     help="'combined' = original repo loss (unchanged). "
@@ -338,8 +348,11 @@ def main():
         print(f"Using IntensityWeightedLoss (intensity_eps={args.intensity_eps}, "
               f"weight_ssim={args.weight_ssim})")
     else:
-        loss_fn = CombinedLoss(channels=args.in_ch, weight_ssim=args.weight_ssim)
-        print(f"Using original CombinedLoss (weight_ssim={args.weight_ssim})")
+        loss_fn = CombinedLoss(channels=args.in_ch, weight_ssim=args.weight_ssim,
+                                weight_lpips=args.weight_lpips, lpips_net=args.lpips_net)
+        print(f"Using original CombinedLoss (weight_ssim={args.weight_ssim})" +
+              (f" + LPIPS (weight={args.weight_lpips}, net={args.lpips_net})"
+               if args.weight_lpips > 0 else ""))
 
     if args.rotate_augment:
         print("Rotation augmentation ENABLED (random 90/180/270 deg per training sample)")
